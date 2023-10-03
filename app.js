@@ -9,6 +9,10 @@ import session from "express-session";
 import passport from "passport";
 import passportLocalMongoose from "passport-local-mongoose";
 
+// google oauth
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import findOrCreate from "mongoose-findorcreate";
+
 // setting up server
 const app = express();
 const port = 3000;
@@ -54,11 +58,15 @@ async function main() {
 const credentialSchema = new mongoose.Schema({
   username: String,
   password: String,
+  googleId: String
 });
 
 // here we use a plugin to our mongoose schema to enable passport.
 // passport-local-mongoose allows us to hash and salt (like using bcrypt) and save to the mongodb database
 credentialSchema.plugin(passportLocalMongoose);
+
+// add another plugin to be able to use findOrCreate later on
+credentialSchema.plugin(findOrCreate);
 
 // compiling the schema into a mongoose Model
 const Credential = mongoose.model("Credential", credentialSchema);
@@ -66,13 +74,59 @@ const Credential = mongoose.model("Credential", credentialSchema);
 // once model the schema, we can set up the configuration of passport-local
 passport.use(Credential.createStrategy());
 
-passport.serializeUser(Credential.serializeUser());
-passport.deserializeUser(Credential.deserializeUser());
+// passport.serializeUser(Credential.serializeUser());
+// passport.deserializeUser(Credential.deserializeUser());
+passport.serializeUser(function(user, cb) {
+  process.nextTick(function() {
+    return cb(null, {
+      id: user.id,
+      username: user.username,
+      picture: user.picture
+    });
+  });
+});
 
-// express methods
+passport.deserializeUser(function(user, cb) {
+  process.nextTick(function() {
+    return cb(null, user);
+  });
+});
+
+// configure strategy
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.CLIENT_ID,
+      clientSecret: process.env.CLIENT_SECRET,
+      callbackURL: "http://localhost:3000/auth/google/secrets",
+      userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
+    },
+    function (accessToken, refreshToken, profile, cb) {
+      Credential.findOrCreate({ 
+        googleId: profile.id
+      }, 
+      function (err, user) {
+        return cb(err, user);
+      });
+    }
+  )
+);
+
+// routs methods
 app.get("/", (req, res) => {
   res.render("home.ejs");
 });
+
+app.get("/auth/google", 
+  passport.authenticate("google", { scope: ["profile"] })
+);
+
+app.get("/auth/google/secrets", 
+  passport.authenticate("google", { failureRedirect: "/login" }),
+  function(req, res) {
+    // Successful authentication, redirect home.
+    res.redirect("/secrets");
+  });
 
 app.get("/login", (req, res) => {
   res.render("login.ejs");
