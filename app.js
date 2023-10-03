@@ -3,11 +3,11 @@ import "dotenv/config";
 import express from "express";
 import bodyParser from "body-parser";
 import mongoose from "mongoose";
-// import md5 from "md5"; // use to generate a hash for the password
-import bcrypt from "bcrypt";
 
-// define the number of rounds for salting
-const saltRounds = 10;
+// import new packages to use cookies and sessions
+import session from "express-session";
+import passport from "passport";
+import passportLocalMongoose from "passport-local-mongoose";
 
 // setting up server
 const app = express();
@@ -20,6 +20,19 @@ app.use(
     extended: true,
   })
 );
+
+// set up session (express-session). Refere to the doc to understand the options
+app.use(
+  session({
+    secret: "Our little secret",
+    resave: false,
+    saveUninitialized: false,
+  })
+);
+
+// initialize passport. Esta parte está especiicada en la documentación de passport:
+app.use(passport.initialize());
+app.use(passport.session());
 
 // database url
 const dbUrl = "mongodb://localhost:27017/newUserDB";
@@ -43,9 +56,20 @@ const credentialSchema = new mongoose.Schema({
   password: String,
 });
 
+// here we use a plugin to our mongoose schema to enable passport.
+// passport-local-mongoose allows us to hash and salt (like using bcrypt) and save to the mongodb database
+credentialSchema.plugin(passportLocalMongoose);
+
 // compiling the schema into a mongoose Model
 const Credential = mongoose.model("Credential", credentialSchema);
 
+// once model the schema, we can set up the configuration of passport-local
+passport.use(Credential.createStrategy());
+
+passport.serializeUser(Credential.serializeUser());
+passport.deserializeUser(Credential.deserializeUser());
+
+// express methods
 app.get("/", (req, res) => {
   res.render("home.ejs");
 });
@@ -58,62 +82,56 @@ app.get("/register", (req, res) => {
   res.render("register.ejs");
 });
 
-app.post("/register", (req, res) => {
-  // start encripting the password from the begining
-  bcrypt.hash(req.body.password, saltRounds, function (err, hash) {
-    // store the username and pass into a variable and store the hash as a password
-    const newUserCredentials = {
-      username: req.body.username,
-      password: hash,
-    };
-    // try to find if the username already exists. if so, return a message to try again or login. if not, register new user and send back the home page
-    Credential.findOne({ username: newUserCredentials.username })
-      .then((doc) => {
-        if (doc === null) {
-          console.log("register");
-          const newUser = new Credential(newUserCredentials);
-          newUser.save();
-          res.render("secrets.ejs");
-        } else {
-          res.render("register.ejs", {
-            message: `Username already exist. Please try again or `,
-          });
-        }
-      })
-      .catch((err) => console.log(err));
+app.get("/secrets", (req, res) => {
+  if (req.isAuthenticated()) {
+    res.render("secrets.ejs");
+  } else {
+    res.redirect("/login");
+  }
+});
+
+app.get("/logout", (req, res) => {
+  // use passport to logout. delete the cookie created and terminate the session
+  req.logout((err) => {
+    if (err) {
+      console.log(err);
+    }
   });
+  res.redirect("/");
+});
+
+app.post("/register", (req, res) => {
+  // use passport-local mongoose to register the user
+  Credential.register(
+    { username: req.body.username },
+    req.body.password,
+    function (err, user) {
+      if (err) {
+        console.log(err);
+        res.redirect("/register");
+      } else {
+        passport.authenticate("local")(req, res, function () {
+          res.redirect("/secrets");
+        });
+      }
+    }
+  );
 });
 
 app.post("/login", (req, res) => {
-  // store the username and pass into a variable
-  const loginCedentials = {
+  // first we need to create a new object with the credentials using the mongoose scheme
+  const user = new Credential({
     username: req.body.username,
     password: req.body.password,
-  };
-
-  // try to find if the username already exists. if so, send back the home page, if not or if password incorrect, send message back
-  Credential.findOne({ username: loginCedentials.username })
-    .then((doc) => {
-      if (doc === null) {
-        res.render("login.ejs", {
-          message: "Username doesn't exist. Please try again or ",
-        });
-      } else {
-        bcrypt.compare(
-          loginCedentials.password,
-          doc.password,
-          function (err, result) {
-            if (result) {
-              console.log("granted");
-              res.render("secrets.ejs");
-            } else {
-              res.render("login.ejs", {
-                error: "Password incorrect. Please try again.",
-              });
-            }
-          }
-        );
-      }
-    })
-    .catch((err) => console.log(err));
+  });
+  // use passport and login() function to authentica the user in the database and grant access
+  req.logIn(user, function (err) {
+    if (err) {
+      console.log(err);
+    } else {
+      passport.authenticate("local")(req, res, function () {
+        res.redirect("/secrets");
+      });
+    }
+  });
 });
