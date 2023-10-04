@@ -58,7 +58,8 @@ async function main() {
 const credentialSchema = new mongoose.Schema({
   username: String,
   password: String,
-  googleId: String
+  googleId: String,
+  secret: String,
 });
 
 // here we use a plugin to our mongoose schema to enable passport.
@@ -76,18 +77,18 @@ passport.use(Credential.createStrategy());
 
 // passport.serializeUser(Credential.serializeUser());
 // passport.deserializeUser(Credential.deserializeUser());
-passport.serializeUser(function(user, cb) {
-  process.nextTick(function() {
+passport.serializeUser(function (user, cb) {
+  process.nextTick(function () {
     return cb(null, {
       id: user.id,
       username: user.username,
-      picture: user.picture
+      picture: user.picture,
     });
   });
 });
 
-passport.deserializeUser(function(user, cb) {
-  process.nextTick(function() {
+passport.deserializeUser(function (user, cb) {
+  process.nextTick(function () {
     return cb(null, user);
   });
 });
@@ -99,15 +100,17 @@ passport.use(
       clientID: process.env.CLIENT_ID,
       clientSecret: process.env.CLIENT_SECRET,
       callbackURL: "http://localhost:3000/auth/google/secrets",
-      userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
+      userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo",
     },
     function (accessToken, refreshToken, profile, cb) {
-      Credential.findOrCreate({ 
-        googleId: profile.id
-      }, 
-      function (err, user) {
-        return cb(err, user);
-      });
+      Credential.findOrCreate(
+        {
+          googleId: profile.id,
+        },
+        function (err, user) {
+          return cb(err, user);
+        }
+      );
     }
   )
 );
@@ -117,16 +120,19 @@ app.get("/", (req, res) => {
   res.render("home.ejs");
 });
 
-app.get("/auth/google", 
+app.get(
+  "/auth/google",
   passport.authenticate("google", { scope: ["profile"] })
 );
 
-app.get("/auth/google/secrets", 
+app.get(
+  "/auth/google/secrets",
   passport.authenticate("google", { failureRedirect: "/login" }),
-  function(req, res) {
+  function (req, res) {
     // Successful authentication, redirect home.
     res.redirect("/secrets");
-  });
+  }
+);
 
 app.get("/login", (req, res) => {
   res.render("login.ejs");
@@ -137,11 +143,13 @@ app.get("/register", (req, res) => {
 });
 
 app.get("/secrets", (req, res) => {
-  if (req.isAuthenticated()) {
-    res.render("secrets.ejs");
-  } else {
-    res.redirect("/login");
-  }
+  Credential.find({ secret: { $ne: null } })
+    .then((foundUsers) => {
+      res.render("secrets.ejs", { usersWithSecrets: foundUsers });
+    })
+    .catch((err) => {
+      console.log(err);
+    });
 });
 
 app.get("/logout", (req, res) => {
@@ -152,6 +160,14 @@ app.get("/logout", (req, res) => {
     }
   });
   res.redirect("/");
+});
+
+app.get("/submit", (req, res) => {
+  if (req.isAuthenticated()) {
+    res.render("submit.ejs");
+  } else {
+    res.redirect("/login");
+  }
 });
 
 app.post("/register", (req, res) => {
@@ -188,4 +204,19 @@ app.post("/login", (req, res) => {
       });
     }
   });
+});
+
+app.post("/submit", async (req, res) => {
+  try {
+    const newSecret = req.body.secret;
+    const foundUser = await Credential.findById(req.user.id);
+
+    if (foundUser) {
+      foundUser.secret = newSecret;
+      await foundUser.save();
+      res.redirect("/secrets");
+    }
+  } catch (err) {
+    console.log(err);
+  }
 });
